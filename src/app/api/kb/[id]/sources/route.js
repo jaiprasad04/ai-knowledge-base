@@ -36,7 +36,8 @@ export async function POST(req, { params }) {
     }
 
     const { id } = await params;
-    const { type, name, content } = await req.json();
+    const body = await req.json();
+    const { type, name, content } = body;
 
     if (!type || !name || !content || content.trim() === "") {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
@@ -50,13 +51,19 @@ export async function POST(req, { params }) {
       return NextResponse.json({ error: "Knowledge base not found" }, { status: 404 });
     }
 
-    const cost = config.ai.sourceTrainingCost;
+    const headerApiKey = req.headers.get("x-custom-api-key");
+    const customApiKey = headerApiKey || body.customApiKey || session.user.customApiKey || null;
+    const isUsingCustomKey = Boolean(customApiKey && customApiKey.trim().length > 0);
 
-    // Deduct credits
-    try {
-      await UserService.deductCredits(session.user.id, cost);
-    } catch (err) {
-      return NextResponse.json({ error: err.message }, { status: 402 });
+    const cost = isUsingCustomKey ? 0 : config.ai.sourceTrainingCost;
+
+    // Deduct credits if not using custom API key
+    if (!isUsingCustomKey && cost > 0) {
+      try {
+        await UserService.deductCredits(session.user.id, cost);
+      } catch (err) {
+        return NextResponse.json({ error: err.message }, { status: 402 });
+      }
     }
 
     const source = await prisma.source.create({

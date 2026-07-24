@@ -44,19 +44,26 @@ export async function POST(req, { params }) {
     userId = session.user.id;
 
     const { id, chatId } = await params;
-    const { content, model } = await req.json();
+    const body = await req.json();
+    const { content, model } = body;
 
     if (!content || content.trim() === "") {
       return NextResponse.json({ error: "Message content is required" }, { status: 400 });
     }
 
-    // 1. Verify User Credit Balance
+    const headerApiKey = req.headers.get("x-custom-api-key");
+    const customApiKey = headerApiKey || body.customApiKey || session.user.customApiKey || null;
+    const isUsingCustomKey = Boolean(customApiKey && customApiKey.trim().length > 0);
+
+    cost = isUsingCustomKey ? 0 : config.ai.chatQueryCost;
+
+    // 1. Verify User Credit Balance (only if not using custom API key)
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       return NextResponse.json({ error: "User profile not found" }, { status: 404 });
     }
 
-    if (user.credits < cost) {
+    if (!isUsingCustomKey && user.credits < cost) {
       return NextResponse.json({
         error: `Insufficient credits. Query requires ${cost} credits, you have ${user.credits}.`
       }, { status: 402 });
@@ -84,12 +91,12 @@ export async function POST(req, { params }) {
       
       const scoredSources = sources.map(s => {
         let score = 0;
-        const body = s.content.toLowerCase();
+        const bodyText = s.content.toLowerCase();
         const title = s.name.toLowerCase();
         
         if (keywords.length > 0) {
           keywords.forEach(kw => {
-            if (body.includes(kw)) score += 2;
+            if (bodyText.includes(kw)) score += 2;
             if (title.includes(kw)) score += 5;
           });
         } else {
@@ -114,9 +121,11 @@ export async function POST(req, { params }) {
       }
     }
 
-    // 4. Deduct playground credits
-    await UserService.deductCredits(userId, cost);
-    creditsDeducted = true;
+    // 4. Deduct playground credits (if not using custom API key)
+    if (!isUsingCustomKey && cost > 0) {
+      await UserService.deductCredits(userId, cost);
+      creditsDeducted = true;
+    }
 
     // 5. Save user message first
     const userMsg = await prisma.kBMessage.create({
@@ -128,7 +137,7 @@ export async function POST(req, { params }) {
     });
 
     // 6. Upstream AI execution with fallback for developer setups
-    const apiKey = config.ai.apiKey;
+    const apiKey = isUsingCustomKey ? customApiKey.trim() : config.ai.apiKey;
     let completedText = "";
 
     if (!apiKey || apiKey.includes("your_") || apiKey.trim() === "") {
@@ -251,7 +260,7 @@ Answer the user query: "${content}"`;
     return NextResponse.json({
       userMessage: userMsg,
       assistantMessage: assistantMsg,
-      remainingCredits: user.credits - cost
+      remainingCredits: isUsingCustomKey ? user.credits : (user.credits - cost)
     });
 
   } catch (err) {

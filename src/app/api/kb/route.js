@@ -33,18 +33,25 @@ export async function POST(req) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { name, description } = await req.json();
+    const body = await req.json();
+    const { name, description } = body;
     if (!name || name.trim() === "") {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
-    const cost = config.ai.kbCreationCost;
+    const headerApiKey = req.headers.get("x-custom-api-key");
+    const customApiKey = headerApiKey || body.customApiKey || session.user.customApiKey || null;
+    const isUsingCustomKey = Boolean(customApiKey && customApiKey.trim().length > 0);
 
-    // Deduct credits
-    try {
-      await UserService.deductCredits(session.user.id, cost);
-    } catch (err) {
-      return NextResponse.json({ error: err.message }, { status: 402 });
+    const cost = isUsingCustomKey ? 0 : config.ai.kbCreationCost;
+
+    // Deduct credits if not using custom API key
+    if (!isUsingCustomKey && cost > 0) {
+      try {
+        await UserService.deductCredits(session.user.id, cost);
+      } catch (err) {
+        return NextResponse.json({ error: err.message }, { status: 402 });
+      }
     }
 
     const base = await prisma.knowledgeBase.create({
@@ -89,4 +96,3 @@ export async function DELETE(req) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
-
